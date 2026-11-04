@@ -1,0 +1,11 @@
+{
+  "name": "innometric-mars-rover",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Perseverance 3D demo driven by a FreeRTOS-semantics kernel (OS PBL Task 3 - Team Innometric)",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tests/scenarios.test.mjs"
+  }
+}
