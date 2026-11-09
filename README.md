@@ -21,6 +21,20 @@ Everything is bundled locally (three.js, fonts, the NASA model), so the demo wor
 | `Space` | Emergency stop |
 | `X` / `I` | Robotic-arm sample / Mastcam-Z image |
 | `C` / `P` / `F` | Change camera / pause / show the hazcam field of view |
+| `N` / `T` / `Esc` | **Step mode**: stop time and advance one kernel event (`N`) or one 1 ms tick (`T`). `Esc` leaves step mode. |
+
+### Step mode
+
+Click **Step** in the top bar, or press `N`, and time stops. Each *Next event* runs the kernel until it makes a decision, then explains that decision in plain language. Decisions include:
+
+- an interrupt
+- a queue message
+- a context switch or preemption
+- a lock taken or released
+- a priority boost
+- a deadline miss
+
+The panel also shows which task is on the CPU, which tasks are ready and waiting, and any pending interrupts. In step mode a drive key press is one command, and releasing the key sends nothing, so you can press `W` and follow that single command through the OS. Choose **My command only** to skip the other tasks. **Auto-play** advances one event per second, which works well for presenting.
 
 ## The core idea
 

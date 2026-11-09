@@ -83,6 +83,8 @@ export function createRoverSystem(rover) {
     mastBusy: 0,
     hgaBusy: 0,
     meda: { temp: -63, pressure: 728, wind: 4.2 },
+    // operator-controlled parts (set via 'part' commands through CmdQueue)
+    parts: { mastPan: 0, armOut: false, hgaOut: false, hazAuto: true, speedCap: 1 },
     // fault-injection switches (set by scenarios)
     commBurst: false,
     navHang: false,
@@ -123,7 +125,7 @@ export function createRoverSystem(rover) {
       sys.hazardDist = d;
       sys.hazardAhead = d < Math.max(1.2, stopDist);
       sys.lastHazardScan = os.now();
-      if (sys.hazardAhead && !prev && sys.cmdThrottle !== 0) {
+      if (sys.hazardAhead && !prev && sys.cmdThrottle !== 0 && sys.parts.hazAuto) {
         sys.hazardStops++;
         os.log('warn', `Obstacle ${d.toFixed(1)} m ${dir > 0 ? 'ahead' : 'behind'} — E-STOP`);
         note('hazard', `HazardAvoid stopped the rover ${d.toFixed(1)} m from an obstacle.`);
@@ -148,8 +150,8 @@ export function createRoverSystem(rover) {
       }
       yield os.run(1); // motor current loop / wheel odometry
       let t = thr;
-      if (sys.hazardAhead && t !== 0 && Math.sign(t) === sys.hazardDir) t = 0;
-      rover.setActuators(t * ROVER.maxSpeed * sys.speedLimit, steer * (sys.speedLimit < 0.5 ? 0.6 : 1), os.now());
+      if (sys.hazardAhead && sys.parts.hazAuto && t !== 0 && Math.sign(t) === sys.hazardDir) t = 0;
+      rover.setActuators(t * ROVER.maxSpeed * sys.speedLimit * sys.parts.speedCap, steer * (sys.speedLimit < 0.5 ? 0.6 : 1), os.now());
     }
   }
 
@@ -185,6 +187,13 @@ export function createRoverSystem(rover) {
           break;
         case 'image':
           sys.imageRequest = true;
+          break;
+        case 'part':
+          sys.parts[c.part] = c.value;
+          os.log('info', `Part ${c.part} = ${typeof c.value === 'number' ? c.value.toFixed(2) : c.value}`);
+          break;
+        case 'downlink':
+          if (!(yield os.send(Q.telem, { kind: 'HK', bytes: 2048 }, 0))) sys.dropped++;
           break;
         case 'estop':
           sys.mode = 'manual';

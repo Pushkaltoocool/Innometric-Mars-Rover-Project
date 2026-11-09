@@ -54,7 +54,7 @@ export class MarsScene {
 
     this.raycaster = new THREE.Raycaster();
     this._resize();
-    window.addEventListener('resize', () => this._resize());
+    new ResizeObserver(() => this._resize()).observe(this.container);
   }
 
   /* ───────────── construction ───────────── */
@@ -315,8 +315,14 @@ export class MarsScene {
     if (wheelsNode) this._splitWheels(wheelsNode);
     this.headRest = this.nodes.head?.quaternion.clone();
     this.hgaRest = this.nodes.antenna_hg?.quaternion.clone();
-    this.armNode = this.nodes['arm.002'];
-    this.armRest = this.armNode?.quaternion.clone();
+    // Arm chain, shoulder to wrist; every joint in the GLB rotates about its local Z.
+    // GLTFLoader strips dots from node names, so "arm.003" in the file is "arm003" here.
+    const chain = ['arm003', 'arm002', 'arm', 'arm004'].map((n) => this.nodes[n]);
+    if (chain.every(Boolean)) this.armJoints = chain.map((node) => ({ node, rest: node.quaternion.clone() }));
+    // Joint angles (rad) for the deployed pose, and HGA [pan, tilt] when pointed at Earth.
+    // Found by searching joint space for a turret position ahead of the front wheels, ~0.7 m off the ground.
+    this.ARM_DEPLOY = [0.5, -0.5, -2, 0];
+    this.HGA_POSE = [1.2, -0.6];
     this.loaded = true;
   }
 
@@ -396,20 +402,26 @@ export class MarsScene {
     // Mastcam head pans while imaging, HGA tracks Earth while transmitting.
     if (this.nodes?.head && this.headRest) {
       const busy = now - sys.mastBusy < 900;
-      this._panTarget = busy ? Math.sin(now / 300) * 0.6 : 0;
+      this._panTarget = busy ? Math.sin(now / 300) * 0.6 : sys.parts.mastPan;
       this._pan = THREE.MathUtils.lerp(this._pan ?? 0, this._panTarget, Math.min(1, dt * 3));
       this.nodes.head.quaternion.copy(this.headRest).premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), this._pan));
     }
     if (this.nodes?.antenna_hg && this.hgaRest) {
-      const tx = now - sys.hgaBusy < 400;
-      this._hga = THREE.MathUtils.lerp(this._hga ?? 0, tx ? 0.9 : 0, Math.min(1, dt * 2));
-      this.nodes.antenna_hg.quaternion.copy(this.hgaRest).premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), this._hga));
+      const tx = now - sys.hgaBusy < 400 || sys.parts.hgaOut;
+      this._hga = THREE.MathUtils.lerp(this._hga ?? 0, tx ? 1 : 0, Math.min(1, dt * 2));
+      const [pan, tilt] = this.HGA_POSE;
+      this.nodes.antenna_hg.quaternion
+        .copy(this.hgaRest)
+        .premultiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(tilt * this._hga, pan * this._hga, 0, 'YXZ')));
     }
-    if (this.armNode && this.armRest) {
-      const target = sys.armPhase === 'deploy' || sys.armPhase === 'drill' ? 1 : 0;
-      this._arm = THREE.MathUtils.lerp(this._arm ?? 0, target, Math.min(1, dt * 1.5));
-      const jitter = sys.armPhase === 'drill' ? Math.sin(performance.now() / 25) * 0.01 : 0;
-      this.armNode.quaternion.copy(this.armRest).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), this._arm * 0.7 + jitter));
+    if (this.armJoints) {
+      const out = sys.armPhase === 'deploy' || sys.armPhase === 'drill' || (sys.parts.armOut && !sys.armPhase);
+      this._arm = THREE.MathUtils.lerp(this._arm ?? 0, out ? 1 : 0, Math.min(1, dt * 1.5));
+      const jitter = sys.armPhase === 'drill' ? Math.sin(performance.now() / 25) * 0.02 : 0;
+      this.armJoints.forEach(({ node, rest }, i) => {
+        const a = this.ARM_DEPLOY[i] * this._arm + (i === 3 ? jitter : 0);
+        node.quaternion.copy(rest).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), a));
+      });
     }
 
     // Hazcam FOV: brightens on each fresh scan, dims when HazardAvoid is starved.

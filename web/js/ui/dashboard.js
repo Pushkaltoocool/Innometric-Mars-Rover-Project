@@ -31,7 +31,7 @@ export class Dashboard {
     this.k = api.k;
     this.opts = opts;
     this.window = 1000;
-    this.tab = 'sched';
+    this.tab = 'rover';
     this.logFilter = 'all';
     this.lastSlow = 0;
     this._bindTabs();
@@ -76,7 +76,7 @@ export class Dashboard {
     for (const b of document.querySelectorAll('[data-tab]')) b.addEventListener('click', () => this.setTab(b.dataset.tab));
     try {
       const t = localStorage.getItem('roveros.tab');
-      if (t) this.setTab(t);
+      if (t && document.querySelector(`[data-tab="${t}"]`) && t !== 'step') this.setTab(t);
     } catch {}
   }
 
@@ -105,10 +105,10 @@ export class Dashboard {
     const c = this.gantt;
     const dpr = Math.min(window.devicePixelRatio, 2);
     const rows = this._orderedRows();
-    const rowH = 20;
-    const top = 18;
+    const rowH = 24;
+    const top = 22;
     const cssW = c.clientWidth;
-    const cssH = top + rows.length * rowH + 20;
+    const cssH = top + rows.length * rowH + 24;
     if (c.width !== cssW * dpr || c.height !== cssH * dpr) {
       c.width = cssW * dpr;
       c.height = cssH * dpr;
@@ -119,7 +119,7 @@ export class Dashboard {
     g.clearRect(0, 0, cssW, cssH);
     const k = this.k;
     const W = this.window;
-    const labelW = 128;
+    const labelW = 156;
     const x0 = labelW;
     const plotW = cssW - labelW;
     const px = plotW / W;
@@ -133,7 +133,7 @@ export class Dashboard {
     for (let i = 0; i <= rows.length; i++) g.fillRect(0, top + i * rowH - 0.5, cssW, 1);
 
     // time axis
-    g.font = '10px "Plex Mono", ui-monospace, monospace';
+    g.font = '13px "Plex Mono", ui-monospace, monospace';
     g.textAlign = 'center';
     const step = W <= 300 ? 50 : W <= 1000 ? 250 : 1000;
     for (let ago = step; ago < W; ago += step) {
@@ -149,23 +149,23 @@ export class Dashboard {
 
     // interrupt ticks
     g.textAlign = 'left';
-    g.font = '11px "Plex Sans", system-ui, sans-serif';
+    g.font = '12.5px "Plex Sans", system-ui, sans-serif';
     g.fillStyle = P.muted;
-    g.fillText('Interrupts', 0, 11);
+    g.fillText("Interrupts", 0, 14);
     g.fillStyle = P.text2;
     for (let t = start; t <= end; t++) if (k.traceIsr[t % L]) g.fillRect(x0 + (t - origin) * px, 4, Math.max(1, px), 9);
 
     rows.forEach(({ name, row, t }, i) => {
       const y = top + i * rowH;
-      g.font = '11.5px "Plex Mono", ui-monospace, monospace';
+      g.font = '13px "Plex Mono", ui-monospace, monospace';
       g.fillStyle = t ? P.text2 : P.muted;
       g.textAlign = 'left';
-      g.fillText(name, 0, y + 14);
+      g.fillText(name, 0, y + 16.5);
       if (t) {
         const boosted = t.priority !== t.basePriority;
         g.fillStyle = boosted ? P.warn : P.muted;
         g.textAlign = 'right';
-        g.fillText(boosted ? `${t.basePriority}→${t.priority}` : String(t.priority), labelW - 12, y + 14);
+        g.fillText(boosted ? `${t.basePriority}→${t.priority}` : String(t.priority), labelW - 14, y + 16.5);
       }
       const st = k.stateTrace;
       let s = st[(start % L) * 16 + row];
@@ -177,16 +177,16 @@ export class Dashboard {
         const w = (tk - runStart) * px;
         if (s === 2 || s === 5) {
           g.fillStyle = s === 5 ? P.warn : P.run;
-          g.fillRect(xa, y + 4, Math.max(w, 1), 12);
+          g.fillRect(xa, y + 5, Math.max(w, 1), 14);
         } else if (s === 1) {
           g.fillStyle = P.run + '2e';
-          g.fillRect(xa, y + 7, w, 6);
+          g.fillRect(xa, y + 9, w, 6);
         } else if (s === 3) {
           g.fillStyle = P.muted + '80';
-          g.fillRect(xa, y + 10, w, 1);
+          g.fillRect(xa, y + 12, w, 1);
         } else if (s === 4) {
           g.fillStyle = P.sel + '66';
-          for (let dx = 0; dx < w; dx += 5) g.fillRect(xa + dx, y + 10, Math.min(2, w - dx), 1);
+          for (let dx = 0; dx < w; dx += 5) g.fillRect(xa + dx, y + 12, Math.min(2, w - dx), 1);
         }
         s = v;
         runStart = tk;
@@ -230,20 +230,23 @@ export class Dashboard {
       .map((t) => {
         const boosted = t.priority !== t.basePriority;
         const used = t.stackPeak / t.stackWords;
-        const blockedOn = t.state === TaskState.BLOCKED ? `<small>${t.blockedOn ? `on ${esc(t.blockedOn.name)}` : 'delay'}</small>` : '';
+        const blockedOn = t.state === TaskState.BLOCKED ? ` <small>${t.blockedOn ? `on ${esc(t.blockedOn.name)}` : 'sleeping'}</small>` : '';
         const acts = t.spec.idle
           ? ''
           : `${t.name === 'SelfMonitor' ? '' : t.state === TaskState.SUSPENDED ? `<button data-act="resume" data-name="${t.name}">Resume</button>` : `<button data-act="suspend" data-name="${t.name}">Suspend</button>`}<button data-act="restart" data-name="${t.name}">Restart</button>`;
-        return `<tr>
-          <td class="nm">${esc(t.name)}<span class="desc">${esc(t.spec.desc ?? 'Runs when nothing else is ready')}</span></td>
-          <td class="num ${boosted ? 'boost' : ''}">${boosted ? `${t.basePriority}→${t.priority}` : t.priority}</td>
-          <td><span class="state ${t.state.toLowerCase()}">${t.state}</span>${blockedOn}</td>
-          <td class="num">${(t.cpu * 100).toFixed(1)}</td>
-          <td><span class="num" style="font-size:11.5px">${t.stackPeak}/${t.stackWords}</span><span class="mini ${used > 0.85 ? 'danger' : used > 0.7 ? 'warn' : ''}"><i style="width:${Math.min(100, used * 100)}%"></i></span></td>
-          <td class="num ${t.missed ? 'warn-t' : ''}">${t.missed}</td>
-          <td class="num">${t.restarts}</td>
-          <td class="acts">${acts}</td>
-        </tr>`;
+        return `<div class="trow">
+          <b class="nm">${esc(t.name)}</b>
+          <span class="num ${boosted ? 'boost' : ''}">${boosted ? `${t.basePriority}→${t.priority}` : t.priority}</span>
+          <span class="state ${t.state.toLowerCase()}">${t.state}${blockedOn}</span>
+          <span class="num">${(t.cpu * 100).toFixed(1)}%</span>
+          <span class="desc">${esc(t.spec.desc ?? 'Runs when nothing else is ready')}</span>
+          <div class="meta">
+            <span class="stk">Stack <b class="num">${t.stackPeak}/${t.stackWords}</b><span class="mini ${used > 0.85 ? 'danger' : used > 0.7 ? 'warn' : ''}"><i style="width:${Math.min(100, used * 100)}%"></i></span></span>
+            <span>Missed <b class="num ${t.missed ? 'warn-t' : ''}">${t.missed}</b></span>
+            <span>Restarts <b class="num">${t.restarts}</b></span>
+            <span class="acts">${acts}</span>
+          </div>
+        </div>`;
       })
       .join('');
   }
@@ -397,8 +400,10 @@ export class Dashboard {
     this.lastSlow = now;
     if (this.tab === 'sched') this._slowSched();
     if (this.tab === 'tasks') this._slowTasks();
-    if (this.tab === 'ipc') this._slowIpc();
-    if (this.tab === 'mem') this._slowMemory();
+    if (this.tab === 'sys') {
+      this._slowIpc();
+      this._slowMemory();
+    }
     if (this.tab === 'log' && this._logDirty) this._renderLog();
     const crit = this.k.logs.filter((l) => l.level === 'crit').length;
     const badge = $('#log-badge');

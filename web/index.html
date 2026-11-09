@@ -16,22 +16,24 @@
 <body>
   <div id="app">
     <header id="topbar">
-      <div class="brand"><b>RoverOS</b><span class="sub">Perseverance, Jezero Crater</span></div>
+      <div class="brand"><b>RoverOS</b><span class="sub">Perseverance · Jezero</span></div>
       <div class="readout" id="status-chips"></div>
+      <div id="scn-live" hidden><span class="dot"></span><span id="scn-live-t"></span><span class="prog"><i id="scn-prog"></i></span><button id="scn-stop">Stop</button></div>
       <div class="controls">
         <div class="seg" role="group" aria-label="Simulation speed" id="speed-seg">
-          <button data-speed="0">Pause</button>
-          <button data-speed="0.1">0.1×</button>
+          <button data-speed="0" title="Pause (P)">Pause</button>
           <button data-speed="0.25">0.25×</button>
           <button data-speed="1" aria-pressed="true">1×</button>
           <button data-speed="2">2×</button>
         </div>
+        <button class="btn" id="step-open" title="Step through the OS one event at a time (N)">Step</button>
         <div class="seg" role="group" aria-label="Camera" id="cam-seg">
           <button data-cam="chase" aria-pressed="true">Chase</button>
           <button data-cam="orbit">Orbit</button>
-          <button data-cam="mastcam">Mastcam</button>
+          <button data-cam="mastcam">Mast</button>
           <button data-cam="top">Map</button>
         </div>
+        <button class="btn" id="panel-toggle" aria-pressed="true" title="Show or hide the side panel (B)">Panel</button>
       </div>
     </header>
 
@@ -41,47 +43,108 @@
         <div id="flash"></div>
         <div id="narrator" aria-live="polite"></div>
 
-        <div id="hud" class="card">
-          <div class="hud-top">
-            <span id="hud-mode" class="mode">Manual</span>
-            <span id="hud-haz" class="haz">Hazcam clear</span>
-          </div>
+        <div id="hud">
+          <div class="hud-top"><span id="hud-mode" class="mode">Manual</span><span id="hud-haz" class="haz">Clear</span></div>
           <div class="speedo"><b id="hud-speed">0.00</b><span>m/s</span></div>
-          <div class="grid2" id="hud-grid"></div>
-          <div class="soc"><span>Battery</span><div class="socbar"><i id="hud-soc"></i></div><b id="hud-soc-t">86%</b></div>
+          <div class="soc"><div class="socbar"><i id="hud-soc"></i></div><b id="hud-soc-t">86%</b></div>
         </div>
 
-        <div id="help" class="card">
-          <div class="help-h"><span>Controls</span><button id="help-x">Hide</button></div>
+        <div id="help" class="card hidden">
+          <div class="help-h"><span>Keyboard</span><button id="help-x">Close</button></div>
           <dl>
-            <dt>W A S D</dt><dd>Drive, via keyboard ISR and CmdQueue</dd>
-            <dt>Click</dt><dd>Set an AutoNav goal on the terrain</dd>
+            <dt>W A S D</dt><dd>Drive</dd>
+            <dt>Click ground</dt><dd>AutoNav to that point</dd>
             <dt>Space</dt><dd>Emergency stop</dd>
-            <dt>X / I</dt><dd>Arm sample / Mastcam image</dd>
-            <dt>C / P</dt><dd>Next camera / pause</dd>
-            <dt>F</dt><dd>Hazcam field of view</dd>
+            <dt>X / I</dt><dd>Sample / photo</dd>
+            <dt>C / P</dt><dd>Camera / pause</dd>
+            <dt>N / T</dt><dd>Step: event / tick</dd>
+            <dt>B</dt><dd>Show / hide side panel</dd>
           </dl>
         </div>
-        <button id="help-open" hidden>Controls</button>
+        <button id="help-open">Keys</button>
       </section>
 
       <aside id="panel">
+        <div id="panel-grip" role="separator" aria-orientation="vertical" aria-label="Resize side panel" tabindex="0" title="Drag to resize. Double-click to reset."></div>
         <nav class="tabs" role="tablist">
-          <button role="tab" data-tab="sched" aria-selected="true">Scheduler</button>
+          <button role="tab" data-tab="rover" aria-selected="true">Rover</button>
+          <button role="tab" data-tab="scn">Scenarios</button>
+          <button role="tab" data-tab="sched">Scheduler</button>
           <button role="tab" data-tab="tasks">Tasks</button>
-          <button role="tab" data-tab="ipc">Locks &amp; queues</button>
-          <button role="tab" data-tab="mem">Memory</button>
+          <button role="tab" data-tab="sys">Locks &amp; memory</button>
           <button role="tab" data-tab="log">Log<span id="log-badge" class="badge" hidden>0</span></button>
+          <button role="tab" data-tab="step" id="tab-step" hidden>Step</button>
         </nav>
 
-        <div class="pane" data-pane="sched">
-          <div class="cfg" id="kernel-cfg">
-            <label>Preemptive scheduling<input type="checkbox" id="cfg-preempt" checked /></label>
-            <label>Priority inheritance<input type="checkbox" id="cfg-inherit" checked /></label>
-            <label>Lock ordering<input type="checkbox" id="cfg-order" checked /></label>
-            <label>Load shedding<input type="checkbox" id="cfg-shed" checked /></label>
+        <div class="pane" data-pane="rover">
+          <h3 class="first">Parts</h3>
+          <div class="parts" id="parts">
+            <section class="part">
+              <header><b>Mastcam</b><span id="p-mast-s">Centred</span></header>
+              <label class="slide">Pan <input type="range" id="mast-pan" min="-90" max="90" value="0" step="5" /><output id="mast-pan-o">0°</output></label>
+              <div class="row"><button class="btn" id="mast-photo">Take photo</button><button class="btn" id="mast-ctr">Centre</button></div>
+            </section>
+            <section class="part">
+              <header><b>Robotic arm</b><span id="p-arm-s">Stowed</span></header>
+              <div class="row"><button class="btn" id="arm-toggle">Deploy</button><button class="btn" id="arm-sample">Collect sample</button></div>
+            </section>
+            <section class="part">
+              <header><b>High-gain antenna</b><span id="p-hga-s">Stowed</span></header>
+              <div class="row"><button class="btn" id="hga-toggle">Point at Earth</button><button class="btn" id="hga-send">Send packet</button></div>
+            </section>
+            <section class="part">
+              <header><b>Wheels</b><span id="p-whl-s">Full power</span></header>
+              <label class="slide">Speed cap <input type="range" id="speed-cap" min="10" max="100" value="100" step="10" /><output id="speed-cap-o">100%</output></label>
+              <div class="row"><button class="btn" id="whl-stop">Stop</button></div>
+            </section>
+            <section class="part">
+              <header><b>Hazcam</b><span id="p-haz-s">Clear</span></header>
+              <div class="row"><button class="btn" id="haz-avoid" aria-pressed="true">Auto-stop on</button><button class="btn" id="haz-fov" aria-pressed="true">Show view</button></div>
+            </section>
           </div>
-          <div class="sec-h"><h3>Timeline</h3>
+          <h3>Telemetry</h3>
+          <dl class="kv" id="hud-grid"></dl>
+        </div>
+
+        <div class="pane" data-pane="scn" hidden>
+          <p class="lead">Break something on purpose and watch the kernel deal with it. Most scenarios can be run with or without their fix.</p>
+          <div id="scn-list" class="scn-list"></div>
+          <details class="cfg-d">
+            <summary>Kernel settings</summary>
+            <div class="cfg" id="kernel-cfg">
+              <label>Preemptive scheduling<input type="checkbox" id="cfg-preempt" checked /></label>
+              <label>Priority inheritance<input type="checkbox" id="cfg-inherit" checked /></label>
+              <label>Lock ordering<input type="checkbox" id="cfg-order" checked /></label>
+              <label>Load shedding<input type="checkbox" id="cfg-shed" checked /></label>
+            </div>
+          </details>
+        </div>
+
+        <div class="pane" data-pane="step" id="stepper" hidden>
+          <div class="st-idle">
+            <h3 class="first">Watch the OS one decision at a time</h3>
+            <p class="lead">Step mode stops time. Each step runs the kernel until it makes a decision, then explains it in plain language.</p>
+            <p class="lead">Try it: press <kbd>W</kbd> once, choose <em>My command only</em>, then press <kbd>N</kbd> to follow your command from the keyboard to the wheels.</p>
+            <button class="btn primary" id="st-start">Start step mode <kbd>N</kbd></button>
+          </div>
+          <div class="st-live">
+            <div class="st-h"><span>Time is stopped</span><button class="btn" id="st-exit">Exit <kbd>Esc</kbd></button></div>
+            <dl class="st-now" id="st-now"></dl>
+            <div class="st-ctl">
+              <button class="btn primary" id="st-event">Next event <kbd>N</kbd></button>
+              <button class="btn" id="st-tick">Next tick <kbd>T</kbd></button>
+              <button class="btn" id="st-auto" aria-pressed="false">Auto-play</button>
+            </div>
+            <div class="seg" role="group" aria-label="Which events to stop at" id="st-filter">
+              <button data-stf="all" aria-pressed="true">Every event</button>
+              <button data-stf="path">My command only</button>
+            </div>
+            <ol id="st-list"></ol>
+          </div>
+        </div>
+
+        <div class="pane" data-pane="sched" hidden>
+          <div class="sec-h first"><h3>Timeline</h3>
             <div class="seg small" role="group" aria-label="Timeline window">
               <button data-window="250">250 ms</button>
               <button data-window="1000" aria-pressed="true">1 s</button>
@@ -97,24 +160,19 @@
         </div>
 
         <div class="pane" data-pane="tasks" hidden>
-          <table class="tasks">
-            <thead><tr><th>Task</th><th class="r">Prio</th><th>State</th><th class="r">CPU %</th><th>Stack</th><th class="r">Missed</th><th class="r">Restarts</th><th></th></tr></thead>
-            <tbody id="task-body"></tbody>
-          </table>
-          <p class="note">An amber priority such as <span class="boost">1→6</span> means the task has inherited a higher priority while it holds a mutex. Missed counts the periods where <code>vTaskDelayUntil</code> woke after its deadline had already passed.</p>
+          <div class="tl-head"><span>Task</span><span class="r">Priority</span><span>State</span><span class="r">CPU</span></div>
+          <div id="task-body" class="tlist"></div>
+          <p class="note">An amber priority such as <span class="boost">1→6</span> means the task inherited a higher priority while holding a mutex. Missed counts the periods where <code>vTaskDelayUntil</code> woke after its deadline had passed.</p>
         </div>
 
-        <div class="pane" data-pane="ipc" hidden>
-          <h3>Resource-allocation graph</h3>
+        <div class="pane" data-pane="sys" hidden>
+          <h3 class="first">Resource-allocation graph</h3>
           <svg id="rag" viewBox="0 0 420 230" role="img" aria-label="Resource allocation graph"></svg>
-          <p class="note">Squares are mutexes and circles are tasks. A solid arrow means the mutex is held by that task; a dashed arrow means the task is waiting for that mutex. A cycle means deadlock.</p>
+          <p class="note">Squares are mutexes, circles are tasks. Solid arrow: held. Dashed arrow: waiting. A cycle means deadlock.</p>
           <h3>Mutexes and semaphores</h3>
           <div class="rows" id="mutex-list"></div>
           <h3>Queues</h3>
           <div class="rows" id="queue-list"></div>
-        </div>
-
-        <div class="pane" data-pane="mem" hidden>
           <h3>Heap (heap_4, first fit with coalescing)</h3>
           <canvas id="heapmap"></canvas>
           <div class="legend" id="heap-legend"></div>
@@ -124,7 +182,7 @@
         </div>
 
         <div class="pane" data-pane="log" hidden>
-          <div class="sec-h" style="margin-top:14px"><h3>Kernel log</h3>
+          <div class="sec-h first"><h3>Kernel log</h3>
             <div class="seg small" role="group" aria-label="Log filter">
               <button data-logf="all" aria-pressed="true">All</button>
               <button data-logf="warn">Warnings</button>
@@ -135,12 +193,6 @@
         </div>
       </aside>
     </main>
-
-    <footer id="scenarios" aria-label="Fault injection">
-      <div id="scn-tabs" role="group" aria-label="Scenario"></div>
-      <div id="scn-desc"></div>
-      <div id="scn-actions"></div>
-    </footer>
   </div>
   <script type="module" src="js/main.js"></script>
 </body>

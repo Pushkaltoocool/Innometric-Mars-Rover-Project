@@ -46,6 +46,16 @@ export class StackOverflowError extends Error {
 const TCB_BYTES = 96;
 const MAX_ROWS = 16;
 
+/** Short description of a queue item for step-mode events. */
+function desc(item) {
+  if (item && typeof item === 'object') {
+    if (item.type === 'drive') return `"drive ${item.throttle ?? 0}, ${item.steer ?? 0}"`;
+    if (item.type) return `"${item.type}"`;
+    if (item.kind) return `a ${item.kind} packet`;
+  }
+  return 'a message';
+}
+
 export class Kernel {
   constructor(cfg = {}) {
     this.cfg = Object.assign(
@@ -84,6 +94,13 @@ export class Kernel {
     this.hooks = { stackOverflow: null, mallocFailed: null, taskDeleted: null };
     this.specs = new Map(); // name -> creation spec, for restart
     this._nextId = 1;
+    // Step-mode event stream: set to a function to receive one event per kernel decision.
+    this.onEvent = null;
+  }
+
+  /** Emit a plain-language kernel event (only called when onEvent is set). */
+  _ev(kind, concept, text, task = null, obj = null) {
+    this.onEvent({ tick: this.tick, kind, concept, text, task: task?.name ?? task, obj: obj?.name ?? obj });
   }
 
   /* ───────────────────────── logging ───────────────────────── */
@@ -93,6 +110,7 @@ export class Kernel {
     this.logs.push(e);
     if (this.logs.length > 600) this.logs.splice(0, this.logs.length - 600);
     for (const l of this.listeners) l(e);
+    if (this.onEvent && level !== 'info') this._ev('log', level === 'crit' ? 'Fault' : 'Warning', `${src}: ${msg}`, src);
     return e;
   }
 
@@ -162,6 +180,7 @@ export class Kernel {
     this.tasks.push(t);
     this._readyAdd(t);
     this.log('info', 'kernel', `xTaskCreate ${spec.name} prio=${spec.priority} stack=${spec.stackWords}w`);
+    if (this.onEvent) this._ev('life', 'Task created', `${spec.name} is created at priority ${spec.priority}, using ${bytes} bytes of heap for its TCB and stack`, t);
     return t;
   }
 
@@ -181,6 +200,7 @@ export class Kernel {
     }
     this.heap.free(t.mem);
     t.state = TaskState.DELETED;
+    if (this.onEvent) this._ev('life', 'Task deleted', `${t.name} is deleted (${reason}). Its memory goes back to the heap`, t);
     this.tasks = this.tasks.filter((x) => x !== t);
     if (this.current === t) this.current = null;
     this.hooks.taskDeleted?.(t, reason);
@@ -209,6 +229,7 @@ export class Kernel {
     this._readyRemove(t);
     t.state = TaskState.SUSPENDED;
     this.log('info', 'kernel', `vTaskSuspend ${t.name}`);
+    if (this.onEvent) this._ev('life', 'Suspend', `${t.name} is suspended and will not be scheduled until it is resumed`, t);
   }
 
   resume(t) {
@@ -218,6 +239,7 @@ export class Kernel {
     t.lastWake = this.tick;
     this._readyAdd(t);
     this.log('info', 'kernel', `vTaskResume ${t.name}`);
+    if (this.onEvent) this._ev('life', 'Resume', `${t.name} is resumed and goes back on the ready list`, t);
   }
 
   /** vTaskPrioritySet (changes base priority; inheritance is re-evaluated). */
@@ -255,8 +277,20 @@ export class Kernel {
 
   _isrApi() {
     return {
-      sendFromISR: (q, item, front = false) => this._queueSendNonBlocking(q, item, front),
-      giveFromISR: (s) => this._semGive(s),
+      sendFromISR: (q, item, front = false) => {
+        const w = q.recvWaiters[0];
+        const ok = this._queueSendNonBlocking(q, item, front);
+        if (this.onEvent) {
+          this._ev('send', 'Message queue', ok ? `The ISR puts ${desc(item)} into ${q.name}${w ? `, which wakes ${w.name}` : ''}` : `The ISR cannot post to ${q.name}: the queue is full, so the message is lost`, null, q);
+        }
+        return ok;
+      },
+      giveFromISR: (s) => {
+        const w = s.waiters[0];
+        const ok = this._semGive(s);
+        if (this.onEvent) this._ev('give', 'Semaphore', `The ISR gives ${s.name}${w ? `, which wakes ${w.name}` : ''}`, null, s);
+        return ok;
+      },
       tick: this.tick,
     };
   }
@@ -276,6 +310,7 @@ export class Kernel {
       const api = this._isrApi();
       for (const isr of pending) {
         this.isrCount++;
+        if (this.onEvent) this._ev('isr', 'Interrupt', `Interrupt ${isr.name} fires. Its handler runs before any task gets the CPU`, null, isr.name);
         try {
           isr.handler(api);
         } catch (e) {
@@ -287,7 +322,12 @@ export class Kernel {
 
     // 2. Tick interrupt: unblock tasks whose delay or timeout has expired.
     for (const t of this.blocked) {
-      if (t.wakeTick <= this.tick) this._unblock(t, this._timeoutValue(t));
+      if (t.wakeTick <= this.tick) {
+        if (this.onEvent) {
+          this._ev('wake', 'Blocked → Ready', t.blockKind === 'delay' ? `${t.name} wakes up: its sleep is over` : `${t.name} stops waiting for ${t.blockedOn?.name}: the timeout ran out`, t, t.blockedOn);
+        }
+        this._unblock(t, this._timeoutValue(t));
+      }
     }
 
     // 3. Pick a task and give it this tick of CPU.
@@ -298,6 +338,7 @@ export class Kernel {
       const t = this._pick();
       if (!t) break;
       if (t !== this.current) {
+        if (this.onEvent) this._evSwitch(this.current, t);
         if (this.current && this.current.state === TaskState.RUNNING) this.current.state = TaskState.READY;
         this.contextSwitches++;
         this.current = t;
@@ -340,6 +381,19 @@ export class Kernel {
     }
     if (ran && ran.state === TaskState.RUNNING && ran.runLeft === 0) {
       // Burst finished; it'll pick up its next op next time it's scheduled.
+    }
+  }
+
+  _evSwitch(from, t) {
+    const live = from && this._isReady(from);
+    if (live && from.priority < t.priority) {
+      this._ev('switch', 'Preemption', `${t.name} (priority ${t.priority}) preempts ${from.name} (priority ${from.priority}). The higher priority always gets the CPU`, t);
+    } else if (live) {
+      this._ev('switch', 'Round robin', `Time slice: ${from.name} hands the CPU to ${t.name}, which has the same priority (${t.priority})`, t);
+    } else if (t.spec.idle) {
+      this._ev('switch', 'Context switch', 'No task is ready, so the CPU runs IDLE', t);
+    } else {
+      this._ev('switch', 'Context switch', `Context switch to ${t.name}, the highest-priority ready task (priority ${t.priority})`, t);
     }
   }
 
@@ -431,6 +485,7 @@ export class Kernel {
           // Previous job overran its period: deadline miss.
           t.missed++;
           t.lastWake = this.tick;
+          if (this.onEvent) this._ev('miss', 'Deadline miss', `${t.name} missed its deadline: the last job ran past its ${op.period} ms period`, t);
           return false;
         }
         t.lastWake = next;
@@ -443,11 +498,14 @@ export class Kernel {
 
       case 'send': {
         const { q, item, timeout, front } = op;
+        const w = q.recvWaiters[0];
         if (this._queueSendNonBlocking(q, item, front)) {
+          if (this.onEvent) this._ev('send', 'Message queue', `${t.name} sends ${desc(item)} to ${q.name}${front ? ' (to the front)' : ''}${w ? `, which wakes ${w.name}` : ''}`, t, q);
           t.pendingValue = true;
           return false;
         }
         if (!timeout) {
+          if (this.onEvent) this._ev('send', 'Message queue', `${t.name} cannot send to ${q.name}: the queue is full, so the message is dropped`, t, q);
           t.pendingValue = false;
           return false;
         }
@@ -462,6 +520,7 @@ export class Kernel {
         const { q, timeout } = op;
         if (q.items.length) {
           t.pendingValue = this._queueTake(q);
+          if (this.onEvent) this._ev('recv', 'Message queue', `${t.name} receives ${desc(t.pendingValue)} from ${q.name}`, t, q);
           return false;
         }
         if (!timeout) {
@@ -478,6 +537,7 @@ export class Kernel {
         if (m.kind === 'mutex') return this._mutexTake(t, m, timeout);
         if (m.count > 0) {
           m.count--;
+          if (this.onEvent) this._ev('take', 'Semaphore', `${t.name} takes ${m.name}`, t, m);
           t.pendingValue = true;
           return false;
         }
@@ -498,8 +558,10 @@ export class Kernel {
             this.log('warn', t.name, `give(${m.name}) by non-owner`);
             return false;
           }
+          if (this.onEvent) this._ev('give', 'Mutex', `${t.name} unlocks ${m.name}`, t, m);
           this._mutexRelease(m, t);
         } else {
+          if (this.onEvent) this._ev('give', 'Semaphore', `${t.name} gives ${m.name}${m.waiters[0] ? `, which wakes ${m.waiters[0].name}` : ''}`, t, m);
           this._semGive(m);
         }
         t.pendingValue = true;
@@ -529,6 +591,7 @@ export class Kernel {
       m.takes++;
       m.heldSince = this.tick;
       t.held.push(m);
+      if (this.onEvent) this._ev('take', 'Mutex', `${t.name} locks ${m.name}. Any other task that needs it must now wait`, t, m);
       t.pendingValue = true;
       return false;
     }
@@ -550,6 +613,7 @@ export class Kernel {
   _inherit(owner, prio, via, depth = 0) {
     if (!owner || depth > 8) return;
     if (owner.priority < prio) {
+      if (this.onEvent) this._ev('inherit', 'Priority inheritance', `${owner.name} is raised from priority ${owner.priority} to ${prio} because it holds ${via.name}, so it can finish and release it sooner`, owner, via);
       this.log('info', 'kernel', `Priority inheritance: ${owner.name} ${owner.priority}→${prio} (holds ${via.name})`);
       this._setEffectivePriority(owner, prio);
       // Transitive inheritance if the owner is itself waiting on a mutex.
@@ -567,6 +631,7 @@ export class Kernel {
     if (p !== t.priority) {
       if (p < t.priority && t.priority > t.basePriority) {
         this.log('info', 'kernel', `Priority disinherit: ${t.name} ${t.priority}→${p}`);
+        if (this.onEvent) this._ev('inherit', 'Priority inheritance', `${t.name} drops back from priority ${t.priority} to ${p} now that no higher-priority task is waiting on it`, t);
       }
       this._setEffectivePriority(t, p);
     }
@@ -596,6 +661,7 @@ export class Kernel {
       m.takes++;
       m.heldSince = this.tick;
       w.held.push(m);
+      if (this.onEvent) this._ev('take', 'Mutex', `${m.name} is handed straight to ${w.name}, which was waiting for it`, w, m);
       this._unblock(w, true);
       if (this.cfg.priorityInheritance && m.waiters.length) this._inherit(w, m.waiters[0].priority, m);
     }
@@ -672,6 +738,15 @@ export class Kernel {
   }
 
   _block(t, kind, obj, wakeTick) {
+    if (this.onEvent) {
+      const txt =
+        kind === 'delay' ? `${t.name} sleeps for ${wakeTick - this.tick} ms and gives up the CPU`
+        : kind === 'recv' ? `${t.name} waits for a message on ${obj.name}`
+        : kind === 'send' ? `${t.name} waits because ${obj.name} is full`
+        : obj.kind === 'mutex' ? `${t.name} (priority ${t.priority}) is blocked: ${obj.name} is held by ${obj.owner?.name}`
+        : `${t.name} waits for ${obj.name}`;
+      this._ev('block', obj?.kind === 'mutex' ? 'Mutex contention' : 'Running → Blocked', txt, t, obj);
+    }
     this._readyRemove(t);
     t.state = TaskState.BLOCKED;
     t.blockKind = kind;
